@@ -44,7 +44,7 @@
       "!{projectRoot}/.storybook/**/*",
       "!{projectRoot}/**/*.stories.@(js|jsx|ts|tsx|mdx)"
     ],
-    "sharedGlobals": []
+    "sharedGlobals": [".github/workflows/ci.yml"]
   },
   "generators": {
     "@nrwl/angular:application": {
