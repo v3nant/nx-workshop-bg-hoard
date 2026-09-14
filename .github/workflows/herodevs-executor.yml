@@ -74,33 +74,48 @@ jobs:
           fi
           echo "Scanning against $LOCKFILE."
           echo "missing_lockfile=false" >> "$GITHUB_OUTPUT"
+          echo "lockfile=$LOCKFILE" >> "$GITHUB_OUTPUT"
 
       - name: Report progress
         if: steps.claim.outputs.claimed == 'true' && steps.resolve.outputs.missing_lockfile != 'true'
         env:
           TOKEN: ${{ steps.token.outputs.token }}
           RUN_ID: ${{ steps.claim.outputs.run_id }}
+          LOCKFILE: ${{ steps.resolve.outputs.lockfile }}
         run: |
-          COUNT=0
-          if [ -f package-lock.json ]; then
-            COUNT=$(jq '.packages | length' package-lock.json 2>/dev/null || echo 0)
-          fi
+          # package-lock.json/npm-shrinkwrap.json are JSON, counted directly.
+          # yarn.lock isn't, but has exactly one "resolved" field per package,
+          # a count verified against a real repository's SBOM output.
+          # pnpm-lock.yaml isn't counted; a wrong guess is worse than no count
+          # for a message nothing downstream reads.
+          case "$LOCKFILE" in
+            package-lock.json|npm-shrinkwrap.json)
+              COUNT=$(jq '.packages | length' "$LOCKFILE" 2>/dev/null || echo 0)
+              MESSAGE="Resolved $COUNT dependencies from $LOCKFILE. Building an SBOM to submit."
+              ;;
+            yarn.lock)
+              COUNT=$(grep -c 'resolved ' "$LOCKFILE" 2>/dev/null || echo 0)
+              MESSAGE="Resolved $COUNT dependencies from $LOCKFILE. Building an SBOM to submit."
+              ;;
+            *)
+              MESSAGE="Resolved dependencies from $LOCKFILE. Building an SBOM to submit."
+              ;;
+          esac
           curl -sS -X POST "https://encroach-skies-flock.ngrok-free.dev/evergreen/api/executors/runs/$RUN_ID/progress" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"progress\":\"Resolved $COUNT dependencies. Building an SBOM to submit.\"}"
+            -d "{\"progress\":\"$MESSAGE\"}"
 
       - name: Generate an SBOM
         if: steps.claim.outputs.claimed == 'true' && steps.resolve.outputs.missing_lockfile != 'true'
         run: |
           # Installed in its own directory, never the repository being
-          # scanned: cdxgen resolves an npm/pnpm tree straight from the
+          # scanned: cdxgen resolves an npm or pnpm tree straight from the
           # lockfile without touching node_modules, but its yarn.lock path
-          # walks node_modules directly and cannot tell its own dependency
-          # tree apart from the repository's. Installed alongside the
-          # repository, a yarn.lock scan reports cdxgen's own dependencies as
-          # the customer's (verified: 222 components instead of 15, on an
-          # otherwise identical scan).
+          # walks node_modules directly and cannot tell its own dependencies
+          # apart from the repository's. Installed alongside a yarn.lock
+          # repository, it reports its own dependency tree as the
+          # repository's own.
           CDXGEN_HOME=$(mktemp -d)
           (cd "$CDXGEN_HOME" && npm install --no-save --no-audit --no-fund --ignore-scripts --legacy-peer-deps @cyclonedx/cdxgen@12.5.1)
           cat > "$CDXGEN_HOME/generate-sbom.mjs" <<'NODE_SCRIPT'
