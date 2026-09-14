@@ -93,8 +93,17 @@ jobs:
       - name: Generate an SBOM
         if: steps.claim.outputs.claimed == 'true' && steps.resolve.outputs.missing_lockfile != 'true'
         run: |
-          npm install --no-save --no-audit --no-fund --ignore-scripts --legacy-peer-deps @cyclonedx/cdxgen@12.5.1
-          cat > generate-sbom.mjs <<'NODE_SCRIPT'
+          # Installed in its own directory, never the repository being
+          # scanned: cdxgen resolves an npm/pnpm tree straight from the
+          # lockfile without touching node_modules, but its yarn.lock path
+          # walks node_modules directly and cannot tell its own dependency
+          # tree apart from the repository's. Installed alongside the
+          # repository, a yarn.lock scan reports cdxgen's own dependencies as
+          # the customer's (verified: 222 components instead of 15, on an
+          # otherwise identical scan).
+          CDXGEN_HOME=$(mktemp -d)
+          (cd "$CDXGEN_HOME" && npm install --no-save --no-audit --no-fund --ignore-scripts --legacy-peer-deps @cyclonedx/cdxgen@12.5.1)
+          cat > "$CDXGEN_HOME/generate-sbom.mjs" <<'NODE_SCRIPT'
           import { writeFileSync } from 'node:fs'
           import { createBom } from '@cyclonedx/cdxgen'
           import { postProcess } from '@cyclonedx/cdxgen/stages/postgen/postgen'
@@ -168,7 +177,11 @@ jobs:
           }
           writeFileSync('sbom.json', JSON.stringify(postProcessed.bomJson))
           NODE_SCRIPT
-          node generate-sbom.mjs
+          # Run from the checkout, not from $CDXGEN_HOME: process.cwd() in the
+          # script above is what createBom scans and what sbom.json is written
+          # beside, and node resolves cdxgen from the script's own file location
+          # regardless of the working directory it runs from.
+          node "$CDXGEN_HOME/generate-sbom.mjs"
 
       - name: Submit the SBOM
         if: steps.claim.outputs.claimed == 'true' && steps.resolve.outputs.missing_lockfile != 'true'
